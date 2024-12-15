@@ -5,19 +5,21 @@ const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUz
 
 export const supabase = createClient(supabaseUrl, supabaseKey);
 
+export type BookingType = 'morning' | 'evening' | 'full';
+
 export type Booking = {
   id: number;
   client_name: string;
   date: string;
-  booking_type: 'morning' | 'evening' | 'full';
+  booking_type: BookingType;
   price: number;
   notes?: string;
   created_at: string;
 };
 
-// Database functions
 export const db = {
   bookings: {
+    // جلب كل الحجوزات
     async getAll() {
       const { data, error } = await supabase
         .from('bookings')
@@ -28,8 +30,47 @@ export const db = {
       return data as Booking[];
     },
 
+    // جلب حجوزات شهر معين
+    async getByMonth(year: number, month: number) {
+      const startDate = new Date(year, month - 1, 1).toISOString().split('T')[0];
+      const endDate = new Date(year, month, 0).toISOString().split('T')[0];
+
+      const { data, error } = await supabase
+        .from('bookings')
+        .select('*')
+        .gte('date', startDate)
+        .lte('date', endDate)
+        .order('date', { ascending: true });
+
+      if (error) throw error;
+      return data as Booking[];
+    },
+
+    // جلب حجوزات يوم معين
+    async getByDate(date: string) {
+      const { data, error } = await supabase
+        .from('bookings')
+        .select('*')
+        .eq('date', date)
+        .order('booking_type', { ascending: true });
+
+      if (error) throw error;
+      return data as Booking[];
+    },
+
+    // إنشاء حجز جديد
     async create(booking: Omit<Booking, 'id' | 'created_at'>) {
-     const { data, error } = await supabase
+      // التحقق من توفر الموعد
+      const isAvailable = await this.checkAvailability(
+        booking.date,
+        booking.booking_type
+      );
+
+      if (!isAvailable) {
+        throw new Error('الموعد غير متاح');
+      }
+
+      const { data, error } = await supabase
         .from('bookings')
         .insert([booking])
         .select()
@@ -39,18 +80,7 @@ export const db = {
       return data;
     },
 
-        // ... الوظائف السابقة
-      
-  async getByDate(date: string) {
-    const { data, error } = await supabase
-      .from('bookings')
-      .select('*')
-      .eq('date', date);
-
-    if (error) throw error;
-    return data as Booking[];
-  },
-
+    // حذف حجز
     async delete(id: number) {
       const { error } = await supabase
         .from('bookings')
@@ -58,20 +88,68 @@ export const db = {
         .eq('id', id);
 
       if (error) throw error;
+    },
+
+    // التحقق من توفر موعد
+    async checkAvailability(date: string, type: BookingType) {
+      const { data, error } = await supabase
+        .from('bookings')
+        .select('booking_type')
+        .eq('date', date);
+
+      if (error) throw error;
+
+      if (data.length === 0) return true;
+      
+      // إذا كان الحجز ليوم كامل أو يوجد حجز ليوم كامل
+      if (type === 'full' || data.some(b => b.booking_type === 'full')) 
+        return false;
+      
+      // التحقق من تعارض الفترة
+      return !data.some(b => b.booking_type === type);
+    },
+
+    // إحصائيات الحجوزات
+    async getStats(year: number, month: number) {
+      const bookings = await this.getByMonth(year, month);
+      
+      const totalIncome = bookings.reduce((sum, b) => sum + b.price, 0);
+      const totalBookings = bookings.length;
+      
+      const daysInMonth = new Date(year, month, 0).getDate();
+      const totalSlots = daysInMonth * 2; // صباحي ومسائي
+      
+      const occupiedSlots = bookings.reduce((sum, b) => 
+        sum + (b.booking_type === 'full' ? 2 : 1), 0
+      );
+      
+      const occupancyRate = (occupiedSlots / totalSlots) * 100;
+
+      return {
+        totalIncome,
+        totalBookings,
+        occupancyRate,
+        occupiedSlots,
+        totalSlots
+      };
     }
   }
 };
 
-// Helper function to check if a date slot is available
-export async function isSlotAvailable(date: string, type: 'morning' | 'evening' | 'full') {
-  const { data, error } = await supabase
-    .from('bookings')
-    .select('booking_type')
-    .eq('date', date);
+// Helper Functions
+export async function isSlotAvailable(date: string, type: BookingType) {
+  return db.bookings.checkAvailability(date, type);
+}
 
-  if (error) throw error;
+export function formatPrice(price: number): string {
+  return price.toFixed(3) + ' د.ك';
+}
 
-  if (data.length === 0) return true;
-  if (type === 'full' || data.some(b => b.booking_type === 'full')) return false;
-  return !data.some(b => b.booking_type === type);
+export function formatDate(date: string): string {
+  return new Date(date).toLocaleDateString('ar-KW', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric'
+  });
 }
